@@ -223,7 +223,7 @@ with left:
         "Generate automatic Slovenian draft translations",
         help="Creates draft Slovenian wording for revised English source rows. Requires OPENAI_API_KEY in Streamlit secrets.",
     )
-    model = st.text_input("OpenAI model", value="gpt-5.5", disabled=not make_ai_drafts)
+    model = st.text_input("OpenAI model", value="gpt-5.2", disabled=not make_ai_drafts)
     max_ai_rows = st.number_input(
         "Maximum changed rows to translate",
         min_value=1,
@@ -251,7 +251,7 @@ with left:
                     instructions,
                     make_ai_drafts,
                     api_key,
-                    model.strip() or "gpt-5.5",
+                    model.strip() or "gpt-5.2",
                     int(max_ai_rows),
                 )
                 st.session_state["zip_bytes"] = zip_path.read_bytes()
