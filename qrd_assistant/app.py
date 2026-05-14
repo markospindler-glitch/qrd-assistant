@@ -12,6 +12,7 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
+from difflib import SequenceMatcher
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,18 +27,23 @@ PROJECTS_DIR.mkdir(exist_ok=True)
 
 NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 W = f"{{{NS['w']}}}"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
 
+ET.register_namespace("w", NS["w"])
+
+# Keep Slovenian terms in ASCII escape form so the deployed app is not affected
+# by editor, terminal, or keyboard encoding differences.
 SL_RULES = [
     ("solution for injection", "raztopina za injiciranje", "EMA form wording"),
     ("subcutaneous use", "subkutana uporaba", "Route wording"),
     ("proline", "prolin", "Excipient terminology"),
     ("L-proline", "L-prolin", "Flag when English removes L-"),
     ("patient", "bolnik", "Prefer patient wording where English says patient"),
-    ("participants", "udeleženci", "Often becomes bolniki in clinical sections"),
+    ("participants", "udele\u017eenci", "Often becomes bolniki in clinical sections"),
     ("subjects", "preiskovanci", "Often becomes bolniki in clinical sections"),
     ("vial", "viala", "Container terminology"),
     ("package leaflet", "navodilo za uporabo", "QRD document part"),
-    ("summary of product characteristics", "povzetek glavnih značilnosti zdravila", "QRD document part"),
+    ("summary of product characteristics", "povzetek glavnih zna\u010dilnosti zdravila", "QRD document part"),
     ("section", "poglavje", "Cross-reference wording"),
 ]
 
@@ -49,10 +55,10 @@ TEMPLATE_HINTS = [
     "METHOD AND ROUTE",
     "SPECIAL STORAGE CONDITIONS",
     "NAME AND ADDRESS OF THE MARKETING AUTHORISATION HOLDER",
-    "POVZETEK GLAVNIH ZNAČILNOSTI ZDRAVILA",
+    "POVZETEK GLAVNIH ZNA\u010cILNOSTI ZDRAVILA",
     "IME ZDRAVILA",
     "NAVODILO ZA UPORABO",
-    "SEZNAM POMOŽNIH SNOVI",
+    "SEZNAM POMO\u017dNIH SNOVI",
 ]
 
 
@@ -177,7 +183,9 @@ def guess_section(text: str, current: str) -> str:
     if not value:
         return current
     words = re.findall(r"[A-Za-z]+", value)
-    tableish = bool(re.search(r"\b(mg|kg|ml|N|n|CI|SD|SE|LS|QMG|MG-ADL|MG-C)\b", value)) or bool(re.match(r"^[≈<≥\d\s.,()%/-]+$", value))
+    tableish = bool(re.search(r"\b(mg|kg|ml|N|n|CI|SD|SE|LS|QMG|MG-ADL|MG-C)\b", value)) or bool(
+        re.match(r"^[\u2248<>\u2264\u2265\d\s.,()%/-]+$", value)
+    )
     if re.match(r"^\d{1,2}(?:\.\d+)?(?:\.|\s)[A-Z][A-Za-z].+", value):
         return value[:120]
     if value.upper() == value and len(value) > 16 and len(words) >= 3 and not tableish:
@@ -190,7 +198,7 @@ def guess_section(text: str, current: str) -> str:
 def change_map(source_docx: Path) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     section = ""
-    for para in extract_paragraphs(source_docx):
+    for source_ordinal, para in enumerate(extract_paragraphs(source_docx), start=1):
         section = guess_section(para["accepted"] or para["original"], section)
         if para["has_revision"] == "True":
             original = norm(para["original"])
@@ -201,6 +209,7 @@ def change_map(source_docx: Path) -> list[dict[str, str]]:
             rows.append(
                 {
                     "idx": para["idx"],
+                    "source_ordinal": str(source_ordinal),
                     "section": section,
                     "category_guess": category,
                     "original_text": original,
@@ -290,6 +299,147 @@ def build_reports(files: UploadedFiles, project_dir: Path) -> dict[str, Path]:
         "changes": out_dir / "source_change_map.csv",
         "flags": out_dir / "terminology_and_template_flags.csv",
     }
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    if not path.exists() or not path.read_text(encoding="utf-8-sig").strip():
+        return []
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f))
+
+
+def paired_change_rows(project_dir: Path) -> list[dict[str, str]]:
+    out_dir = project_dir / "output"
+    changes = read_csv_rows(out_dir / "source_change_map.csv")
+    target_rows = read_csv_rows(out_dir / "target_paragraphs.csv")
+    target_by_ordinal = {str(ordinal): row for ordinal, row in enumerate(target_rows, start=1)}
+    paired: list[dict[str, str]] = []
+    for change in changes:
+        source_ordinal = change.get("source_ordinal") or ""
+        target = target_by_ordinal.get(source_ordinal)
+        row = dict(change)
+        row["target_ordinal"] = source_ordinal
+        row["target_idx"] = target.get("idx", "") if target else ""
+        row["target_current_text"] = norm(target.get("accepted", "")) if target else ""
+        row["target_match_method"] = "paragraph_ordinal" if target else "not_matched"
+        paired.append(row)
+    return paired
+
+
+def _text_run(text: str, deleted: bool = False) -> ET.Element:
+    run = ET.Element(f"{W}r")
+    text_el = ET.SubElement(run, f"{W}delText" if deleted else f"{W}t")
+    if text[:1].isspace() or text[-1:].isspace():
+        text_el.set(f"{{{XML_NS}}}space", "preserve")
+    text_el.text = text
+    return run
+
+
+def _revision_element(kind: str, revision_id: int, author: str, date: str, text: str) -> ET.Element:
+    wrapper = ET.Element(
+        f"{W}{kind}",
+        {
+            f"{W}id": str(revision_id),
+            f"{W}author": author,
+            f"{W}date": date,
+        },
+    )
+    wrapper.append(_text_run(text, deleted=kind == "del"))
+    return wrapper
+
+
+def _diff_revision_children(original: str, revised: str, author: str, date: str, start_id: int) -> tuple[list[ET.Element], int]:
+    old_tokens = re.findall(r"\s+|\S+", original)
+    new_tokens = re.findall(r"\s+|\S+", revised)
+    matcher = SequenceMatcher(None, old_tokens, new_tokens)
+    children: list[ET.Element] = []
+    revision_id = start_id
+
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        old_text = "".join(old_tokens[old_start:old_end])
+        new_text = "".join(new_tokens[new_start:new_end])
+        if tag == "equal" and old_text:
+            children.append(_text_run(old_text))
+        elif tag == "delete" and old_text:
+            children.append(_revision_element("del", revision_id, author, date, old_text))
+            revision_id += 1
+        elif tag == "insert" and new_text:
+            children.append(_revision_element("ins", revision_id, author, date, new_text))
+            revision_id += 1
+        elif tag == "replace":
+            if old_text:
+                children.append(_revision_element("del", revision_id, author, date, old_text))
+                revision_id += 1
+            if new_text:
+                children.append(_revision_element("ins", revision_id, author, date, new_text))
+                revision_id += 1
+
+    return children, revision_id
+
+
+def _replace_paragraph_with_revision(p: ET.Element, revised: str, author: str, date: str, start_id: int) -> int:
+    original = paragraph_text_by_revision(p)[1]
+    p_pr = p.find(f"{W}pPr")
+    for child in list(p):
+        p.remove(child)
+    if p_pr is not None:
+        p.append(p_pr)
+    children, next_id = _diff_revision_children(original, revised, author, date, start_id)
+    for child in children:
+        p.append(child)
+    return next_id
+
+
+def _enable_track_revisions(settings_xml: bytes) -> bytes:
+    try:
+        root = ET.fromstring(settings_xml)
+    except ET.ParseError:
+        return settings_xml
+    if root.find(f"{W}trackRevisions") is None:
+        root.append(ET.Element(f"{W}trackRevisions"))
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def create_tracked_change_docx(
+    target_docx: Path,
+    revisions: list[dict[str, str]],
+    output_docx: Path,
+    author: str = "QRD Assistant",
+) -> set[str]:
+    applied_target_rows: set[str] = set()
+    revision_date = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    revision_id = 1
+
+    with zipfile.ZipFile(target_docx, "r") as zin:
+        document_root = ET.fromstring(zin.read("word/document.xml"))
+        paragraphs = {str(idx): p for idx, p in enumerate(iter_paragraphs(document_root), start=1)}
+
+        for revision in revisions:
+            target_idx = str(revision.get("target_idx") or revision.get("target_row") or "")
+            revised = norm(revision.get("slovenian_revised") or "")
+            delete_target = str(revision.get("delete_target") or "").lower() in {"true", "1", "yes"}
+            if not target_idx or target_idx in applied_target_rows or (not revised and not delete_target):
+                continue
+            paragraph = paragraphs.get(target_idx)
+            if paragraph is None:
+                continue
+            current = norm(paragraph_text_by_revision(paragraph)[1])
+            if current == revised and not delete_target:
+                continue
+            revision_id = _replace_paragraph_with_revision(paragraph, revised, author, revision_date, revision_id)
+            applied_target_rows.add(target_idx)
+
+        document_xml = ET.tostring(document_root, encoding="utf-8", xml_declaration=True)
+        with zipfile.ZipFile(output_docx, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = b"" if item.is_dir() else zin.read(item.filename)
+                if item.filename == "word/document.xml":
+                    data = document_xml
+                elif item.filename == "word/settings.xml":
+                    data = _enable_track_revisions(data)
+                zout.writestr(item, data)
+
+    return applied_target_rows
 
 
 def terminology_flags(changes: list[dict[str, str]], target_rows: list[dict[str, str]], templates: list[str]) -> list[dict[str, str]]:

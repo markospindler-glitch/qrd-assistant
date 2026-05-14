@@ -11,6 +11,7 @@ A small local app for EMA QRD English-to-Slovenian review projects.
   - `source_change_map.csv`
   - `source_paragraphs.csv`
   - `target_paragraphs.csv`
+  - optional AI tracked-change draft DOCX in the Streamlit app
   - `terminology_and_template_flags.csv`
   - `review_brief.md`
   - `chatgpt_prompt.md`
@@ -19,7 +20,7 @@ A small local app for EMA QRD English-to-Slovenian review projects.
 
 ## Accuracy Position
 
-This app is intentionally analysis-first. It does not silently translate or overwrite the Slovenian target document. For QRD work, the final client deliverable should still be prepared in Microsoft Word with Track Changes enabled and validated in Word.
+The local no-AI app is intentionally analysis-first. The Streamlit app can also create an AI tracked-change draft DOCX, but that draft still needs Word review before client delivery.
 
 ## Run
 
@@ -32,4 +33,3 @@ Use the bundled Codex Python runtime:
 Then open:
 
 `http://127.0.0.1:8765`
-
