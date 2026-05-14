@@ -10,6 +10,7 @@ A small Streamlit app for EMA QRD English-to-Slovenian review projects.
 - Generate a ZIP review package containing:
   - source tracked-change map
   - source and target paragraph exports
+  - optional AI Slovenian draft translations for revised English rows
   - terminology/template flags
   - review brief
   - ChatGPT review prompt
@@ -19,6 +20,22 @@ A small Streamlit app for EMA QRD English-to-Slovenian review projects.
 ## Accuracy Position
 
 This app is analysis-first. It does not silently translate or overwrite the client document. Final tracked changes should still be applied and validated in Microsoft Word.
+
+## Optional OpenAI Draft Translation
+
+The app can generate draft Slovenian translations for revised English source rows. This requires an OpenAI API key.
+
+For Streamlit Community Cloud:
+
+1. Open the app settings.
+2. Go to **Secrets**.
+3. Add:
+
+```toml
+OPENAI_API_KEY = "your_api_key_here"
+```
+
+The key should never be committed to GitHub. Draft translations are included in the ZIP as CSV and Markdown files and should be reviewed before being applied in Microsoft Word.
 
 ## Local Run
 
@@ -35,4 +52,3 @@ Deploy settings:
 - Branch: `main`
 - Main file path: `streamlit_app.py`
 - Python version: current default is fine
-
