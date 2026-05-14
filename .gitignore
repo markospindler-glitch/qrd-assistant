@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+
+# Local/generated QRD output
+qrd_assistant/projects/
+qrd_assistant/__pycache__/
+
+# Local office/temp output
+lo_profile/
+lo_tmp/
+rendered_car_report/
+car_report_images/
+car_report_images_2016plus/
+
+# Local/generated documents from other work in this folder
+*.docx
+*.pdf
+*.zip
+bolha_cars.html
+build_car_report.py
+build_car_report_2016plus.py
+PROJECT_MEMORY.md
+README_PROJECT_MOVED.txt
+
+# Keep app source files
+!qrd_assistant/README.md
+!qrd_assistant/app.py
